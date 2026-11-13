@@ -3,7 +3,9 @@
 
 declare(strict_types=1);
 
+use Deadcode\Report\Analysis;
 use Deadcode\Report\CollectorClient;
+use Deadcode\Report\Day;
 use Deadcode\Report\MarkdownReport;
 use Deadcode\Report\TrackedFiles;
 
@@ -15,22 +17,42 @@ foreach ($autoloaders as $autoloader) {
     }
 }
 
-$projectDir = $argv[1] ?? '.';
+$usage = "Usage: DEADCODE_URL=... DEADCODE_TOKEN=... DEADCODE_APP=... deadcode-report [--today=YYYY-MM-DD] [project-dir]\n";
+
+$projectDir = '.';
+$today = Day::today();
+foreach (array_slice($argv, 1) as $argument) {
+    if (str_starts_with($argument, '--today=')) {
+        $today = substr($argument, strlen('--today='));
+    } elseif (str_starts_with($argument, '--')) {
+        fwrite(STDERR, $usage);
+        exit(2);
+    } else {
+        $projectDir = $argument;
+    }
+}
+
 $url = (string) getenv('DEADCODE_URL');
 $token = (string) getenv('DEADCODE_TOKEN');
 $app = (string) getenv('DEADCODE_APP');
 
-if ($url === '' || $token === '' || $app === '') {
-    fwrite(STDERR, "Usage: DEADCODE_URL=... DEADCODE_TOKEN=... DEADCODE_APP=... deadcode-report [project-dir]\n");
+if ($url === '' || $token === '' || $app === '' || !Day::isValid($today)) {
+    fwrite(STDERR, $usage);
     exit(2);
 }
 
 try {
+    $tracked = TrackedFiles::php($projectDir);
+
     echo MarkdownReport::render(
         $app,
-        TrackedFiles::php($projectDir),
-        (new CollectorClient($url, $token))->export($app),
+        Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $today),
     );
+
+    if (!$tracked->historyComplete) {
+        fwrite(STDERR, "The git history is shallow: no label can be issued. Fetch the full history (fetch-depth: 0).\n");
+        exit(3);
+    }
 } catch (RuntimeException $exception) {
     fwrite(STDERR, $exception->getMessage() . "\n");
     exit(1);

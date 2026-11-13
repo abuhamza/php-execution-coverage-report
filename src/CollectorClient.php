@@ -14,10 +14,7 @@ final class CollectorClient
     ) {
     }
 
-    /**
-     * @return array<string, array{hits: int, last_seen: string}> total hits and last-seen day by path
-     */
-    public function export(string $app): array
+    public function export(string $app): Export
     {
         $curl = curl_init(rtrim($this->collectorUrl, '/') . '/export?' . http_build_query(['app' => $app]));
         if ($curl === false) {
@@ -38,19 +35,6 @@ final class CollectorClient
             throw new RuntimeException(sprintf('The collector answered the export request with HTTP %d.', $status));
         }
 
-        $export = json_decode($body, true);
-        if (!is_array($export) || ($export['v'] ?? null) !== 1 || !is_array($export['files'] ?? null)) {
-            throw new RuntimeException('The collector returned an export this report does not understand.');
-        }
-
-        $files = [];
-        foreach ($export['files'] as $path => $file) {
-            if (!is_array($file) || !is_int($file['hits'] ?? null) || !is_string($file['last_seen'] ?? null)) {
-                throw new RuntimeException('The collector returned an export this report does not understand.');
-            }
-            $files[(string) $path] = ['hits' => $file['hits'], 'last_seen' => $file['last_seen']];
-        }
-
-        return $files;
+        return Export::fromJson($body);
     }
 }
