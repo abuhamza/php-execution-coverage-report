@@ -7,8 +7,8 @@ namespace Deadcode\Report;
 use RuntimeException;
 
 /**
- * The PHP files git tracks in a project, the day each one entered its history and what the working tree holds
- * of them. This is the set of first-party files every part of the report works on.
+ * The first-party PHP files git tracks in a project, the day each one entered its history and what the working
+ * tree holds of them. This is the set of files every part of the report works on.
  */
 final class TrackedFiles
 {
@@ -20,6 +20,7 @@ final class TrackedFiles
      * @param string|null                $sha             the checked-out commit, null when unknown
      * @param string                     $pathPrefix      path of the project directory inside its repository: empty,
      *                                                    or ending with a slash
+     * @param int                        $leftOut         tracked PHP files that are not first-party
      */
     public function __construct(
         public readonly array $addedOn,
@@ -27,15 +28,18 @@ final class TrackedFiles
         public readonly array $sources = [],
         public readonly ?string $sha = null,
         public readonly string $pathPrefix = '',
+        public readonly int $leftOut = 0,
     ) {
     }
 
-    public static function php(string $projectDir): self
+    public static function php(string $projectDir, Config $config): self
     {
-        $paths = array_values(array_filter(
+        $tracked = array_filter(
             explode("\0", self::git($projectDir, ['ls-files', '-z', '--', '*.php'])),
             static fn (string $path): bool => $path !== '',
-        ));
+        );
+        $paths = array_values(array_filter($tracked, $config->firstParty(...)));
+        $leftOut = count($tracked) - count($paths);
 
         $sources = [];
         foreach ($paths as $path) {
@@ -48,7 +52,7 @@ final class TrackedFiles
         $pathPrefix = trim(self::git($projectDir, ['rev-parse', '--show-prefix']));
 
         if (trim(self::git($projectDir, ['rev-parse', '--is-shallow-repository'])) === 'true') {
-            return new self(array_fill_keys($paths, null), false, $sources, $sha, $pathPrefix);
+            return new self(array_fill_keys($paths, null), false, $sources, $sha, $pathPrefix, $leftOut);
         }
 
         // A rename counts as the addition of the new path: without --no-renames it would not be listed at all.
@@ -62,7 +66,7 @@ final class TrackedFiles
             $addedOn[$path] = $added[$path] ?? null;
         }
 
-        return new self($addedOn, true, $sources, $sha, $pathPrefix);
+        return new self($addedOn, true, $sources, $sha, $pathPrefix, $leftOut);
     }
 
     /**

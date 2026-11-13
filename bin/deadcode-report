@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 use Deadcode\Report\Analysis;
 use Deadcode\Report\CollectorClient;
+use Deadcode\Report\Config;
 use Deadcode\Report\Day;
 use Deadcode\Report\JsonReport;
 use Deadcode\Report\MarkdownReport;
@@ -23,6 +24,7 @@ $usage = <<<'USAGE'
     Usage: DEADCODE_URL=... DEADCODE_TOKEN=... DEADCODE_APP=... deadcode-report [options] [project-dir]
 
       --today=YYYY-MM-DD      report day, the current UTC day by default
+      --config=FILE           first-party paths and allowlist, deadcode.yaml in the project directory by default
       --static=FILE           PHPStan JSON output holding the shipmonk/dead-code-detector findings
       --json=FILE             also write the report as JSON to FILE
       --repository-url=URL    link files to URL/blob/<commit>/<path>; by default
@@ -31,7 +33,7 @@ $usage = <<<'USAGE'
     USAGE;
 
 $projectDir = '.';
-$options = ['today' => Day::today(), 'static' => null, 'json' => null, 'repository-url' => null];
+$options = ['today' => Day::today(), 'config' => null, 'static' => null, 'json' => null, 'repository-url' => null];
 foreach (array_slice($argv, 1) as $argument) {
     if (!str_starts_with($argument, '--')) {
         $projectDir = $argument;
@@ -60,6 +62,7 @@ if ($repositoryUrl === null && (string) getenv('GITHUB_SERVER_URL') !== '' && (s
 }
 
 try {
+    $config = Config::load($projectDir, $options['config']);
     $static = null;
     if ($options['static'] !== null) {
         $findings = @file_get_contents($options['static']);
@@ -69,8 +72,8 @@ try {
         $static = StaticFindings::fromJson($findings);
     }
 
-    $tracked = TrackedFiles::php($projectDir);
-    $analysis = Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $options['today'], $static);
+    $tracked = TrackedFiles::php($projectDir, $config);
+    $analysis = Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $options['today'], $static, $config);
 
     if ($options['json'] !== null && @file_put_contents($options['json'], JsonReport::render($app, $analysis)) === false) {
         throw new RuntimeException(sprintf('Could not write the JSON report to "%s".', $options['json']));

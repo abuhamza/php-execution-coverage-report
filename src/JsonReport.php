@@ -43,6 +43,21 @@ final class JsonReport
                 'last_seen' => $file->lastSeen,
                 'added_on' => $file->addedOn,
                 'lines' => $file->lines,
+                'allowlisted' => $file->allowlisted === null
+                    ? null
+                    : ['reason' => $file->allowlisted->reason, 'expires' => $file->allowlisted->expires],
+            ];
+        }
+
+        $allowlist = [];
+        foreach ($analysis->allowlist as $status) {
+            $allowlist[] = [
+                'paths' => $status->entry->paths->patterns,
+                'reason' => $status->entry->reason,
+                'expires' => $status->entry->expires,
+                'expired' => $status->expired,
+                'files' => $status->files,
+                'cold_or_dead' => $status->coldOrDead,
             ];
         }
 
@@ -52,9 +67,17 @@ final class JsonReport
                 'app' => $app,
                 'today' => $analysis->today,
                 'sha' => $analysis->sha,
+                'config' => [
+                    'file' => $analysis->config->file,
+                    'include' => $analysis->config->include->patterns,
+                    'exclude' => $analysis->config->exclude->patterns,
+                    'left_out' => $analysis->leftOut,
+                ],
                 'windows' => $windows,
                 'labels' => $labels,
                 'quadrants' => $quadrants,
+                'allowlisted' => self::tally($analysis->filesKept()),
+                'allowlist' => $allowlist,
                 'files' => $files,
             ],
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR,

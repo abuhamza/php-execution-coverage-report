@@ -29,11 +29,13 @@ final class Analysis
      * @param list<WindowCoverage>       $windows         strongest label first
      * @param list<string>               $warnings        what may make the labels wrong although they are issued,
      *                                                    or why none is: one sentence each
-     * @param array<string, FileVerdict> $files           every tracked file by path, sorted by path
+     * @param array<string, FileVerdict> $files           every first-party file by path, sorted by path
      * @param bool                       $hasStaticVerdict false when no static findings were given, so no file has a quadrant
      * @param string|null                $sha             the commit line counts and static verdicts were read at
      * @param string                     $pathPrefix      path of the project directory inside its repository
      * @param list<string>               $deployedShas    the distinct commits the reporters last ran, sorted
+     * @param int                        $leftOut         tracked PHP files the config does not count as first-party
+     * @param list<AllowlistStatus>      $allowlist       one per entry of the config, in its order
      */
     private function __construct(
         public readonly string $today,
@@ -49,11 +51,20 @@ final class Analysis
         public readonly ?string $sha,
         public readonly string $pathPrefix,
         public readonly array $deployedShas,
+        public readonly Config $config,
+        public readonly int $leftOut,
+        public readonly array $allowlist,
     ) {
     }
 
-    public static function of(TrackedFiles $tracked, Export $export, string $today, ?StaticFindings $static = null): self
-    {
+    public static function of(
+        TrackedFiles $tracked,
+        Export $export,
+        string $today,
+        ?StaticFindings $static = null,
+        ?Config $config = null,
+    ): self {
+        $config ??= Config::default();
         $activeSince = Day::minus($today, self::SILENT_AFTER_DAYS);
 
         $reporters = [];
@@ -124,6 +135,7 @@ final class Analysis
             }
         }
 
+        $live = array_filter($config->allowlist, static fn (AllowlistEntry $entry): bool => !$entry->expired($today));
         $files = [];
         foreach ($tracked->addedOn as $path => $addedOn) {
             $seen = $export->files[$path] ?? null;
@@ -137,9 +149,21 @@ final class Analysis
                 $addedOn,
                 $source->lines,
                 $static?->verdict($source),
+                self::firstNaming($live, $path),
             );
         }
         ksort($files, SORT_STRING);
+
+        $allowlist = [];
+        foreach ($config->allowlist as $entry) {
+            $named = array_filter($files, static fn (FileVerdict $file): bool => $entry->paths->match($file->path));
+            $allowlist[] = new AllowlistStatus(
+                $entry,
+                $entry->expired($today),
+                count($named),
+                array_column(array_filter($named, static fn (FileVerdict $file): bool => $file->verdict->coldOrDead()), 'path'),
+            );
+        }
 
         $deployedShas = array_values(array_unique(array_filter(array_column($export->reporters, 'sha'))));
         sort($deployedShas);
@@ -158,7 +182,19 @@ final class Analysis
             $tracked->sha,
             $tracked->pathPrefix,
             $deployedShas,
+            $config,
+            $tracked->leftOut,
+            $allowlist,
         );
+    }
+
+    /**
+     * @return list<FileVerdict> the early cold, cold and dead files a live allowlist entry keeps out of the
+     *                           candidate sections, strongest label first, then by path
+     */
+    public function filesKept(): array
+    {
+        return self::strongestFirst(array_filter($this->files, static fn (FileVerdict $file): bool => $file->kept()));
     }
 
     /**
@@ -180,13 +216,14 @@ final class Analysis
     {
         return self::strongestFirst(array_filter(
             $this->files,
-            static fn (FileVerdict $file): bool => $file->static === StaticVerdict::None && $file->verdict->coldOrDead(),
+            static fn (FileVerdict $file): bool => $file->static === StaticVerdict::None && $file->candidate(),
         ));
     }
 
     /**
      * The directories that hold at least one early cold, cold or dead file directly, fully cold ones first,
-     * then by falling share of such files, by falling number of them and by path.
+     * then by falling share of such files, by falling number of them and by path. A file kept by the
+     * allowlist counts as a file of its directory, not as a cold or dead one.
      *
      * @return list<DirectoryTally>
      */
@@ -197,7 +234,7 @@ final class Analysis
         foreach ($this->files as $file) {
             $directory = dirname($file->path);
             $files[$directory] = ($files[$directory] ?? 0) + 1;
-            $coldOrDead[$directory] = ($coldOrDead[$directory] ?? 0) + (int) $file->verdict->coldOrDead();
+            $coldOrDead[$directory] = ($coldOrDead[$directory] ?? 0) + (int) $file->candidate();
         }
 
         $tallies = [];
@@ -237,14 +274,28 @@ final class Analysis
     }
 
     /**
-     * @return list<FileVerdict> sorted by path
+     * @return list<FileVerdict> sorted by path, without the files the allowlist keeps
      */
     public function filesWith(Verdict $verdict): array
     {
         return array_values(array_filter(
             $this->files,
-            static fn (FileVerdict $file): bool => $file->verdict === $verdict,
+            static fn (FileVerdict $file): bool => $file->verdict === $verdict && !$file->kept(),
         ));
+    }
+
+    /**
+     * @param array<AllowlistEntry> $entries
+     */
+    private static function firstNaming(array $entries, string $path): ?AllowlistEntry
+    {
+        foreach ($entries as $entry) {
+            if ($entry->paths->match($path)) {
+                return $entry;
+            }
+        }
+
+        return null;
     }
 
     /**

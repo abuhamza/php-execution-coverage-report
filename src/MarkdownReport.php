@@ -24,6 +24,7 @@ final class MarkdownReport
                 : sprintf('- Data: %s to %s', $analysis->firstDay, $analysis->lastDay),
             sprintf('- Reporting hosts: %d', $analysis->hostCount),
             '- ' . self::summary($analysis),
+            '- ' . self::rule($analysis),
             '- ' . self::staticSummary($analysis),
             ...self::commits($analysis),
             '',
@@ -32,6 +33,9 @@ final class MarkdownReport
             ...self::reporters($analysis),
             ...self::directories($analysis),
             ...($analysis->hasStaticVerdict ? self::quadrants($analysis, $blobUrl) : self::labels($analysis, $blobUrl)),
+            ...self::kept($analysis, $blobUrl),
+            ...self::expiredEntries($analysis),
+            ...self::staleEntries($analysis),
             ...self::notLabelled($analysis, $blobUrl),
             '## Limits of file-level data',
             '',
@@ -140,6 +144,107 @@ final class MarkdownReport
     }
 
     /**
+     * @return list<string>
+     */
+    private static function kept(Analysis $analysis, ?string $blobUrl): array
+    {
+        $files = $analysis->filesKept();
+        if ($files === []) {
+            return [];
+        }
+
+        $lines = [
+            sprintf('## Allowlisted: no hit, kept on purpose (%s, %s)', count($files) === 1 ? '1 file' : count($files) . ' files', self::lines($files)),
+            '',
+            'These files are left out of the sections and tallies above.',
+            '',
+            '| File | Label | Last seen | Lines | Reason | Expires |',
+            '|---|---|---|---|---|---|',
+        ];
+        foreach ($files as $file) {
+            $lines[] = sprintf(
+                '| %s | %s | %s | %d | %s | %s |',
+                self::file($file, $blobUrl),
+                $file->verdict->value,
+                $file->lastSeen ?? 'never',
+                $file->lines,
+                self::cell(self::sentence($file->allowlisted->reason ?? '')),
+                $file->allowlisted->expires ?? 'never',
+            );
+        }
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function expiredEntries(Analysis $analysis): array
+    {
+        $expired = array_filter($analysis->allowlist, static fn (AllowlistStatus $status): bool => $status->expired);
+        if ($expired === []) {
+            return [];
+        }
+
+        $lines = [
+            sprintf('## Expired allowlist entries (%d)', count($expired)),
+            '',
+            'These entries no longer apply, so the files they covered are listed above again.'
+                . ' Give each one a new reason and date, or remove it.',
+            '',
+        ];
+        foreach ($expired as $status) {
+            $lines[] = sprintf(
+                '- %s: %s (expired on %s; %s, %d cold or dead)',
+                self::patterns($status->entry->paths),
+                self::sentence($status->entry->reason),
+                (string) $status->entry->expires,
+                $status->files === 1 ? '1 file' : $status->files . ' files',
+                count($status->coldOrDead),
+            );
+            foreach ($status->coldOrDead as $path) {
+                $lines[] = sprintf('  - `%s` (%s)', $path, $analysis->files[$path]->verdict->value);
+            }
+        }
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function staleEntries(Analysis $analysis): array
+    {
+        $stale = array_filter(
+            $analysis->allowlist,
+            static fn (AllowlistStatus $status): bool => $status->stale() && !$status->expired,
+        );
+        if ($stale === []) {
+            return [];
+        }
+
+        $lines = [
+            sprintf('## Allowlist entries matching no file (%d)', count($stale)),
+            '',
+            'Remove these entries, or correct their paths.',
+            '',
+        ];
+        foreach ($stale as $status) {
+            $lines[] = sprintf(
+                '- %s: %s (%s)',
+                self::patterns($status->entry->paths),
+                self::sentence($status->entry->reason),
+                $status->entry->expires === null ? 'never expires' : 'expires on ' . $status->entry->expires,
+            );
+        }
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
      * @param list<FileVerdict> $files
      *
      * @return list<string>
@@ -221,6 +326,29 @@ final class MarkdownReport
         return str_replace('|', '\|', $text);
     }
 
+    private static function sentence(string $text): string
+    {
+        return trim((string) preg_replace('~\s+~', ' ', $text));
+    }
+
+    private static function patterns(Globs $globs): string
+    {
+        return implode(', ', array_map(static fn (string $pattern): string => '`' . $pattern . '`', $globs->patterns));
+    }
+
+    private static function rule(Analysis $analysis): string
+    {
+        $config = $analysis->config;
+
+        return sprintf(
+            'First-party rule (%s): include %s%s; %s left out',
+            $config->file === null ? 'default' : '`' . $config->file . '`',
+            self::patterns($config->include),
+            $config->exclude->patterns === [] ? '' : ', exclude ' . self::patterns($config->exclude),
+            $analysis->leftOut === 1 ? '1 tracked PHP file' : $analysis->leftOut . ' tracked PHP files',
+        );
+    }
+
     /**
      * @param list<FileVerdict> $files
      */
@@ -244,7 +372,12 @@ final class MarkdownReport
                 + count($analysis->filesWith(Verdict::NotJudged)),
         );
 
-        return sprintf('Tracked PHP files: %d (%s)', count($analysis->files), implode(', ', $parts));
+        $kept = count($analysis->filesKept());
+        if ($kept > 0) {
+            $parts[] = sprintf('%d allowlisted', $kept);
+        }
+
+        return sprintf('First-party PHP files: %d (%s)', count($analysis->files), implode(', ', $parts));
     }
 
     /**
