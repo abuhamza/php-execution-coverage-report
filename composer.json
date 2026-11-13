@@ -1,0 +1,19 @@
+{
+    "name": "deadcode/report",
+    "description": "Command-line report of tracked PHP files with no recorded production hits.",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Deadcode\\Report\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/deadcode-report"
+    ]
+}
