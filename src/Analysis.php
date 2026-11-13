@@ -30,6 +30,10 @@ final class Analysis
      * @param list<string>               $warnings        what may make the labels wrong although they are issued,
      *                                                    or why none is: one sentence each
      * @param array<string, FileVerdict> $files           every tracked file by path, sorted by path
+     * @param bool                       $hasStaticVerdict false when no static findings were given, so no file has a quadrant
+     * @param string|null                $sha             the commit line counts and static verdicts were read at
+     * @param string                     $pathPrefix      path of the project directory inside its repository
+     * @param list<string>               $deployedShas    the distinct commits the reporters last ran, sorted
      */
     private function __construct(
         public readonly string $today,
@@ -41,10 +45,14 @@ final class Analysis
         public readonly array $windows,
         public readonly array $warnings,
         public readonly array $files,
+        public readonly bool $hasStaticVerdict,
+        public readonly ?string $sha,
+        public readonly string $pathPrefix,
+        public readonly array $deployedShas,
     ) {
     }
 
-    public static function of(TrackedFiles $tracked, Export $export, string $today): self
+    public static function of(TrackedFiles $tracked, Export $export, string $today, ?StaticFindings $static = null): self
     {
         $activeSince = Day::minus($today, self::SILENT_AFTER_DAYS);
 
@@ -120,15 +128,21 @@ final class Analysis
         foreach ($tracked->addedOn as $path => $addedOn) {
             $seen = $export->files[$path] ?? null;
             $lastSeen = $seen['last_seen'] ?? null;
+            $source = $tracked->sources[$path] ?? new SourceFile(0, []);
             $files[$path] = new FileVerdict(
                 $path,
                 self::verdict($windows, $lastSeen, $addedOn),
                 $seen['hits'] ?? 0,
                 $lastSeen,
                 $addedOn,
+                $source->lines,
+                $static?->verdict($source),
             );
         }
         ksort($files, SORT_STRING);
+
+        $deployedShas = array_values(array_unique(array_filter(array_column($export->reporters, 'sha'))));
+        sort($deployedShas);
 
         return new self(
             $today,
@@ -140,7 +154,86 @@ final class Analysis
             $windows,
             $warnings,
             $files,
+            $static !== null,
+            $tracked->sha,
+            $tracked->pathPrefix,
+            $deployedShas,
         );
+    }
+
+    /**
+     * @return list<FileVerdict> strongest label first, then by path
+     */
+    public function filesIn(Quadrant $quadrant): array
+    {
+        return self::strongestFirst(array_filter(
+            $this->files,
+            static fn (FileVerdict $file): bool => $file->quadrant() === $quadrant,
+        ));
+    }
+
+    /**
+     * @return list<FileVerdict> the early cold, cold and dead files the detector has nothing to say about,
+     *                           strongest label first, then by path; empty without static findings
+     */
+    public function filesWithoutStaticVerdict(): array
+    {
+        return self::strongestFirst(array_filter(
+            $this->files,
+            static fn (FileVerdict $file): bool => $file->static === StaticVerdict::None && $file->verdict->coldOrDead(),
+        ));
+    }
+
+    /**
+     * The directories that hold at least one early cold, cold or dead file directly, fully cold ones first,
+     * then by falling share of such files, by falling number of them and by path.
+     *
+     * @return list<DirectoryTally>
+     */
+    public function directories(): array
+    {
+        $files = [];
+        $coldOrDead = [];
+        foreach ($this->files as $file) {
+            $directory = dirname($file->path);
+            $files[$directory] = ($files[$directory] ?? 0) + 1;
+            $coldOrDead[$directory] = ($coldOrDead[$directory] ?? 0) + (int) $file->verdict->coldOrDead();
+        }
+
+        $tallies = [];
+        foreach ($files as $directory => $count) {
+            if ($coldOrDead[$directory] > 0) {
+                $tallies[] = new DirectoryTally((string) $directory, $count, $coldOrDead[$directory]);
+            }
+        }
+        usort($tallies, static fn (DirectoryTally $a, DirectoryTally $b): int => [
+            $b->coldOrDead * $a->files,
+            $b->coldOrDead,
+            $a->directory,
+        ] <=> [
+            $a->coldOrDead * $b->files,
+            $a->coldOrDead,
+            $b->directory,
+        ]);
+
+        return $tallies;
+    }
+
+    /**
+     * True when production runs a commit other than the one this report read, or more than one commit.
+     * An abbreviated commit matches the full one it starts.
+     */
+    public function deployedShasDiffer(): bool
+    {
+        if (count($this->deployedShas) > 1) {
+            return true;
+        }
+        $deployed = $this->deployedShas[0] ?? null;
+
+        return $deployed !== null
+            && $this->sha !== null
+            && !str_starts_with($this->sha, $deployed)
+            && !str_starts_with($deployed, $this->sha);
     }
 
     /**
@@ -152,6 +245,26 @@ final class Analysis
             $this->files,
             static fn (FileVerdict $file): bool => $file->verdict === $verdict,
         ));
+    }
+
+    /**
+     * @param array<string, FileVerdict> $files sorted by path
+     *
+     * @return list<FileVerdict>
+     */
+    private static function strongestFirst(array $files): array
+    {
+        $files = array_values($files);
+        $rank = [Verdict::Dead->value => 0, Verdict::Cold->value => 1, Verdict::EarlyCold->value => 2];
+        usort($files, static fn (FileVerdict $a, FileVerdict $b): int => [
+            $rank[$a->verdict->value] ?? 3,
+            $a->path,
+        ] <=> [
+            $rank[$b->verdict->value] ?? 3,
+            $b->path,
+        ]);
+
+        return $files;
     }
 
     /**

@@ -6,7 +6,9 @@ declare(strict_types=1);
 use Deadcode\Report\Analysis;
 use Deadcode\Report\CollectorClient;
 use Deadcode\Report\Day;
+use Deadcode\Report\JsonReport;
 use Deadcode\Report\MarkdownReport;
+use Deadcode\Report\StaticFindings;
 use Deadcode\Report\TrackedFiles;
 
 $autoloaders = [$_composer_autoload_path ?? '', __DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../vendor/autoload.php'];
@@ -17,37 +19,63 @@ foreach ($autoloaders as $autoloader) {
     }
 }
 
-$usage = "Usage: DEADCODE_URL=... DEADCODE_TOKEN=... DEADCODE_APP=... deadcode-report [--today=YYYY-MM-DD] [project-dir]\n";
+$usage = <<<'USAGE'
+    Usage: DEADCODE_URL=... DEADCODE_TOKEN=... DEADCODE_APP=... deadcode-report [options] [project-dir]
+
+      --today=YYYY-MM-DD      report day, the current UTC day by default
+      --static=FILE           PHPStan JSON output holding the shipmonk/dead-code-detector findings
+      --json=FILE             also write the report as JSON to FILE
+      --repository-url=URL    link files to URL/blob/<commit>/<path>; by default
+                              $GITHUB_SERVER_URL/$GITHUB_REPOSITORY when both are set
+
+    USAGE;
 
 $projectDir = '.';
-$today = Day::today();
+$options = ['today' => Day::today(), 'static' => null, 'json' => null, 'repository-url' => null];
 foreach (array_slice($argv, 1) as $argument) {
-    if (str_starts_with($argument, '--today=')) {
-        $today = substr($argument, strlen('--today='));
-    } elseif (str_starts_with($argument, '--')) {
+    if (!str_starts_with($argument, '--')) {
+        $projectDir = $argument;
+        continue;
+    }
+    [$name, $value] = explode('=', substr($argument, 2), 2) + [1 => ''];
+    if (!array_key_exists($name, $options) || $value === '') {
         fwrite(STDERR, $usage);
         exit(2);
-    } else {
-        $projectDir = $argument;
     }
+    $options[$name] = $value;
 }
 
 $url = (string) getenv('DEADCODE_URL');
 $token = (string) getenv('DEADCODE_TOKEN');
 $app = (string) getenv('DEADCODE_APP');
 
-if ($url === '' || $token === '' || $app === '' || !Day::isValid($today)) {
+if ($url === '' || $token === '' || $app === '' || !Day::isValid($options['today'])) {
     fwrite(STDERR, $usage);
     exit(2);
 }
 
-try {
-    $tracked = TrackedFiles::php($projectDir);
+$repositoryUrl = $options['repository-url'];
+if ($repositoryUrl === null && (string) getenv('GITHUB_SERVER_URL') !== '' && (string) getenv('GITHUB_REPOSITORY') !== '') {
+    $repositoryUrl = getenv('GITHUB_SERVER_URL') . '/' . getenv('GITHUB_REPOSITORY');
+}
 
-    echo MarkdownReport::render(
-        $app,
-        Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $today),
-    );
+try {
+    $static = null;
+    if ($options['static'] !== null) {
+        $findings = @file_get_contents($options['static']);
+        if ($findings === false) {
+            throw new RuntimeException(sprintf('Could not read the static file "%s".', $options['static']));
+        }
+        $static = StaticFindings::fromJson($findings);
+    }
+
+    $tracked = TrackedFiles::php($projectDir);
+    $analysis = Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $options['today'], $static);
+
+    if ($options['json'] !== null && @file_put_contents($options['json'], JsonReport::render($app, $analysis)) === false) {
+        throw new RuntimeException(sprintf('Could not write the JSON report to "%s".', $options['json']));
+    }
+    echo MarkdownReport::render($app, $analysis, $repositoryUrl);
 
     if (!$tracked->historyComplete) {
         fwrite(STDERR, "The git history is shallow: no label can be issued. Fetch the full history (fetch-depth: 0).\n");

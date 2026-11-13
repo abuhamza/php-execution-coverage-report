@@ -7,7 +7,8 @@ namespace Deadcode\Report;
 use RuntimeException;
 
 /**
- * The PHP files git tracks in a project and the day each one entered its history.
+ * The PHP files git tracks in a project, the day each one entered its history and what the working tree holds
+ * of them. This is the set of first-party files every part of the report works on.
  */
 final class TrackedFiles
 {
@@ -15,10 +16,17 @@ final class TrackedFiles
      * @param array<string, string|null> $addedOn         by project-relative path, the UTC day of the latest commit
      *                                                    that added the file; null when history does not say
      * @param bool                       $historyComplete false for a shallow clone, where no add day can be trusted
+     * @param array<string, SourceFile>  $sources         by project-relative path, for the files present in the working tree
+     * @param string|null                $sha             the checked-out commit, null when unknown
+     * @param string                     $pathPrefix      path of the project directory inside its repository: empty,
+     *                                                    or ending with a slash
      */
     public function __construct(
         public readonly array $addedOn,
         public readonly bool $historyComplete = true,
+        public readonly array $sources = [],
+        public readonly ?string $sha = null,
+        public readonly string $pathPrefix = '',
     ) {
     }
 
@@ -29,8 +37,18 @@ final class TrackedFiles
             static fn (string $path): bool => $path !== '',
         ));
 
+        $sources = [];
+        foreach ($paths as $path) {
+            $code = @file_get_contents($projectDir . '/' . $path);
+            if ($code !== false) {
+                $sources[$path] = SourceFile::parse($code);
+            }
+        }
+        $sha = trim(self::git($projectDir, ['rev-parse', 'HEAD']));
+        $pathPrefix = trim(self::git($projectDir, ['rev-parse', '--show-prefix']));
+
         if (trim(self::git($projectDir, ['rev-parse', '--is-shallow-repository'])) === 'true') {
-            return new self(array_fill_keys($paths, null), false);
+            return new self(array_fill_keys($paths, null), false, $sources, $sha, $pathPrefix);
         }
 
         // A rename counts as the addition of the new path: without --no-renames it would not be listed at all.
@@ -44,7 +62,7 @@ final class TrackedFiles
             $addedOn[$path] = $added[$path] ?? null;
         }
 
-        return new self($addedOn);
+        return new self($addedOn, true, $sources, $sha, $pathPrefix);
     }
 
     /**

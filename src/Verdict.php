@@ -20,4 +20,12 @@ enum Verdict: string
     case NoHistory = 'no history';
     /** No recent hit and old enough for a window, but collection did not cover that window. */
     case NotJudged = 'not judged';
+
+    /**
+     * Whether this is one of the labels a window issues for a file without a hit.
+     */
+    public function coldOrDead(): bool
+    {
+        return $this === self::EarlyCold || $this === self::Cold || $this === self::Dead;
+    }
 }
