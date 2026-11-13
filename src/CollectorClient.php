@@ -10,7 +10,7 @@ final class CollectorClient
 {
     public function __construct(
         private readonly string $collectorUrl,
-        private readonly string $token,
+        private readonly string $exportToken,
     ) {
     }
 
@@ -24,7 +24,7 @@ final class CollectorClient
             throw new RuntimeException('Could not initialise curl.');
         }
 
-        curl_setopt($curl, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $this->token]);
+        curl_setopt($curl, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $this->exportToken]);
         curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($curl, CURLOPT_TIMEOUT, 30);
 
@@ -39,7 +39,7 @@ final class CollectorClient
         }
 
         $export = json_decode($body, true);
-        if (!is_array($export) || !is_array($export['files'] ?? null)) {
+        if (!is_array($export) || ($export['v'] ?? null) !== 1 || !is_array($export['files'] ?? null)) {
             throw new RuntimeException('The collector returned an export this report does not understand.');
         }
 
