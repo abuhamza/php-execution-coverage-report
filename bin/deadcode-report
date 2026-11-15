@@ -7,6 +7,7 @@ use Deadcode\Report\Analysis;
 use Deadcode\Report\CollectorClient;
 use Deadcode\Report\Config;
 use Deadcode\Report\Day;
+use Deadcode\Report\InstalledPackages;
 use Deadcode\Report\JsonReport;
 use Deadcode\Report\MarkdownReport;
 use Deadcode\Report\StaticFindings;
@@ -73,13 +74,17 @@ try {
     }
 
     $tracked = TrackedFiles::php($projectDir, $config);
-    $analysis = Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $options['today'], $static, $config);
+    $installed = InstalledPackages::read($projectDir);
+    $analysis = Analysis::of($tracked, (new CollectorClient($url, $token))->export($app), $options['today'], $static, $config, $installed);
 
     if ($options['json'] !== null && @file_put_contents($options['json'], JsonReport::render($app, $analysis)) === false) {
         throw new RuntimeException(sprintf('Could not write the JSON report to "%s".', $options['json']));
     }
     echo MarkdownReport::render($app, $analysis, $repositoryUrl);
 
+    if ($installed === null) {
+        fwrite(STDERR, "No installed.json in the vendor directory: the unused packages section is left out. Run composer install first.\n");
+    }
     if (!$tracked->historyComplete) {
         fwrite(STDERR, "The git history is shallow: no label can be issued. Fetch the full history (fetch-depth: 0).\n");
         exit(3);

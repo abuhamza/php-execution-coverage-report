@@ -37,6 +37,7 @@ final class MarkdownReport
             ...self::expiredEntries($analysis),
             ...self::staleEntries($analysis),
             ...self::notLabelled($analysis, $blobUrl),
+            ...self::packages($analysis),
             '## Limits of file-level data',
             '',
             'A file counts as alive as soon as it is loaded, even when none of its code runs: autoloading it for a type'
@@ -239,6 +240,64 @@ final class MarkdownReport
                 $status->entry->expires === null ? 'never expires' : 'expires on ' . $status->entry->expires,
             );
         }
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function packages(Analysis $analysis): array
+    {
+        $usage = $analysis->packages;
+        if ($usage === null) {
+            return [];
+        }
+        if (!$usage->judged()) {
+            return [
+                '## Composer packages never loaded',
+                '',
+                sprintf('Not listed yet, collection is too short to call a package unused: %s.', implode('; ', $usage->gaps)),
+                '',
+            ];
+        }
+
+        $lines = [
+            sprintf('## Composer packages never loaded (%d)', count($usage->unused)),
+            '',
+            sprintf(
+                'No file of these packages was loaded in production between %s and %s. Confirm before removing one:'
+                    . ' a package can be needed without its PHP files being loaded there (build step, binaries, assets),'
+                    . ' and one installed recently has had little time to be loaded.',
+                (string) $analysis->firstDay,
+                (string) $analysis->lastDay,
+            ),
+            '',
+        ];
+        if ($usage->unused === []) {
+            $lines[] = 'None.';
+        } else {
+            $lines[] = '| Package | Version | Path | Required by |';
+            $lines[] = '|---|---|---|---|';
+            foreach ($usage->unused as $package) {
+                $lines[] = sprintf(
+                    '| `%s` | %s | `%s` | %s |',
+                    self::cell($package->name),
+                    self::cell($package->version),
+                    self::cell((string) $package->path),
+                    $package->direct ? '`composer.json`' : 'another package',
+                );
+            }
+        }
+        $lines[] = '';
+        $lines[] = sprintf(
+            'Installed packages: %d. Not judged: %d development-only, which production does not install, and %d with'
+                . ' no PHP file production could load (metapackages, Composer plugins, assets).',
+            $usage->installed,
+            $usage->devOnly,
+            $usage->notLoadable,
+        );
         $lines[] = '';
 
         return $lines;

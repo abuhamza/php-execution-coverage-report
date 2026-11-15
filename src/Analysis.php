@@ -36,6 +36,7 @@ final class Analysis
      * @param list<string>               $deployedShas    the distinct commits the reporters last ran, sorted
      * @param int                        $leftOut         tracked PHP files the config does not count as first-party
      * @param list<AllowlistStatus>      $allowlist       one per entry of the config, in its order
+     * @param PackageUsage|null          $packages        null when the installed packages were not given
      */
     private function __construct(
         public readonly string $today,
@@ -54,6 +55,7 @@ final class Analysis
         public readonly Config $config,
         public readonly int $leftOut,
         public readonly array $allowlist,
+        public readonly ?PackageUsage $packages,
     ) {
     }
 
@@ -63,6 +65,7 @@ final class Analysis
         string $today,
         ?StaticFindings $static = null,
         ?Config $config = null,
+        ?InstalledPackages $installed = null,
     ): self {
         $config ??= Config::default();
         $activeSince = Day::minus($today, self::SILENT_AFTER_DAYS);
@@ -90,12 +93,10 @@ final class Analysis
         $gating = $lifetimesBySource[self::GATING_SOURCE] ?? null;
 
         $windows = [];
+        $collectionGaps = [];
         foreach (Window::cases() as $window) {
             $start = $window->startsOn($today);
             $gaps = [];
-            if (!$tracked->historyComplete) {
-                $gaps[] = 'the git history is shallow, so file ages are unknown';
-            }
             if ($export->firstDay === null) {
                 $gaps[] = 'the collector holds no data for this app';
             } elseif ($export->firstDay > $start) {
@@ -111,6 +112,11 @@ final class Analysis
                 if ($lastSeenBySource[self::GATING_SOURCE] < $activeSince) {
                     $gaps[] = sprintf('`%s` has not reported since %s', self::GATING_SOURCE, $lastSeenBySource[self::GATING_SOURCE]);
                 }
+            }
+            // Package usage needs no file age, and the last window is the shortest one.
+            $collectionGaps = $gaps;
+            if (!$tracked->historyComplete) {
+                array_unshift($gaps, 'the git history is shallow, so file ages are unknown');
             }
             $windows[] = new WindowCoverage($window, $start, $gaps);
         }
@@ -185,6 +191,7 @@ final class Analysis
             $config,
             $tracked->leftOut,
             $allowlist,
+            $installed === null ? null : self::packageUsage($installed, $export, $collectionGaps),
         );
     }
 
@@ -282,6 +289,41 @@ final class Analysis
             $this->files,
             static fn (FileVerdict $file): bool => $file->verdict === $verdict && !$file->kept(),
         ));
+    }
+
+    /**
+     * @param list<string> $gaps why collection does not cover the shortest window, empty when it does
+     */
+    private static function packageUsage(InstalledPackages $installed, Export $export, array $gaps): PackageUsage
+    {
+        $devOnly = 0;
+        $notLoadable = 0;
+        $unused = [];
+        foreach ($installed->packages as $package) {
+            if ($package->dev) {
+                $devOnly++;
+            } elseif (!$package->loadable()) {
+                $notLoadable++;
+            } elseif ($gaps === [] && !self::anyUnder($export->files, $package->path . '/')) {
+                $unused[] = $package;
+            }
+        }
+
+        return new PackageUsage(count($installed->packages), $devOnly, $notLoadable, $gaps, $unused);
+    }
+
+    /**
+     * @param array<string, mixed> $files by project-relative path
+     */
+    private static function anyUnder(array $files, string $directory): bool
+    {
+        foreach ($files as $path => $_) {
+            if (str_starts_with($path, $directory)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

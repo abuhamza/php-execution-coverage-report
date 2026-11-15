@@ -61,6 +61,25 @@ final class JsonReport
             ];
         }
 
+        $packages = null;
+        if ($analysis->packages !== null) {
+            $packages = [
+                'installed' => $analysis->packages->installed,
+                'dev_only' => $analysis->packages->devOnly,
+                'not_loadable' => $analysis->packages->notLoadable,
+                'judged' => $analysis->packages->judged(),
+                'unused' => array_map(
+                    static fn (Package $package): array => [
+                        'name' => $package->name,
+                        'version' => $package->version,
+                        'path' => $package->path,
+                        'direct' => $package->direct,
+                    ],
+                    $analysis->packages->unused,
+                ),
+            ];
+        }
+
         return json_encode(
             [
                 'v' => self::VERSION,
@@ -79,6 +98,7 @@ final class JsonReport
                 'allowlisted' => self::tally($analysis->filesKept()),
                 'allowlist' => $allowlist,
                 'files' => $files,
+                'packages' => $packages,
             ],
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR,
         ) . "\n";
