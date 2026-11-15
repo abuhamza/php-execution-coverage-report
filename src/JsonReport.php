@@ -22,6 +22,7 @@ final class JsonReport
                 'days' => $coverage->window->value,
                 'start' => $coverage->start,
                 'judged' => $coverage->judged(),
+                'gaps' => $coverage->gaps,
             ];
             $labels[str_replace(' ', '_', $verdict->value)] = self::tally($analysis->filesWith($verdict));
         }
@@ -93,6 +94,11 @@ final class JsonReport
                     'left_out' => $analysis->leftOut,
                 ],
                 'windows' => $windows,
+                'collection' => [
+                    'batch_days' => $analysis->missingDays !== null,
+                    'missing' => $analysis->missingDays === null ? null : (object) $analysis->missingDays,
+                    'warnings' => $analysis->warnings,
+                ],
                 'labels' => $labels,
                 'quadrants' => $quadrants,
                 'allowlisted' => self::tally($analysis->filesKept()),
